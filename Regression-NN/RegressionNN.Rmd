@@ -1,0 +1,426 @@
+---
+title: "Regression"
+author: "Yamkela Kwakwi"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Regression
+
+```{r, message=FALSE, warning=FALSE}
+# run once to install the R package
+install.packages("keras3")
+
+# run once to to create a virtual env called r-keras with the necessary python dependencies installed
+keras3::install_keras()
+
+
+# include at start of quarto doc/ R script to tell reticulate which env to use when calling python from R
+reticulate::use_virtualenv("r-keras", required = TRUE)
+
+reticulate::py_list_packages("r-keras")
+
+```
+
+
+```{r, message=FALSE, warning=FALSE}
+#Load packages
+install_tensorflow()
+
+library(dplyr)
+library(tidyverse)
+library(keras3)
+library(tensorflow)
+library(caret)
+library(knitr)
+library(ggplot2)
+library(keras)
+library(reticulate)
+
+
+```
+
+## Introduction
+
+In this part of the assignment we will build a neural network model to
+to tackle a regression problem. The dataset has 1030 observations and 8
+features. The target is a numeric variable with minimum value of 2.33,
+maximum of 82.60 and a mean of 35.82. We do not have any information on
+the features, therefore we did not perform any feature engineering on
+the dataset. The features have different scale, we will need to scale
+before building the model. The dataset does not contain any null values.
+
+## Data Exploration
+
+```{r}
+regression_data <- read.csv("data/Data-regression.csv")
+
+head(as.tibble(regression_data))
+
+
+```
+
+
+```{r}
+# Distribution of the target variable
+
+distr <- ggplot(regression_data, aes(target))+
+  geom_histogram(bins = 10)+
+  theme_minimal()
+ggsave("imgs/distribution.jpg", plot = distr, width = 10, height = 8)
+
+
+```
+
+
+```{r}
+#Check the dimmensions of the dataset
+cat("Dimensions of the original dataset: ", dim(regression_data))
+
+```
+
+```{r}
+# Check for missing values
+missing_values <- sum(is.na(regression_data))
+print(paste("Number of missing values:", missing_values))
+```
+
+```{r}
+#Scale the data
+#regression_data <- scale(regression_data)
+#head(as.tibble(regression_data))
+```
+
+## Data partitioning
+
+To run the neural network we split the data into training and testing
+using a 80/20 split.
+
+```{r}
+set.seed(123)
+#create indices, 80/20 split
+ind <- sample(2, nrow(regression_data), replace = T, prob = c(0.8, 0.2))
+
+#split features
+x_train <- regression_data[ind == 1, 1:8]
+x_train <- scale(x_train)
+x_test <- regression_data[ind == 2, 1:8]
+x_test <- scale(x_test)
+
+#split target
+y_train <- regression_data[ind == 1, 9]
+y_test <- regression_data[ind == 2, 9]
+
+```
+
+## Prep data for model
+
+```{r}
+#convert data to matrix form
+##features
+x_train <- as.matrix(x_train)
+x_test <- as.matrix(x_test)
+
+##target
+y_train <- as.matrix(y_train)
+y_test <- as.matrix(y_test)
+
+```
+
+## Build model
+
+To get the best model, we performed hyperparameter tuning of different
+configurations of layers, learning rated and dropout rates.
+
+-   Layer configurations: We defined 3 layer configurations, each with
+    different number of units (neurons) for the hidden layers.
+-   Learning and dropoutrates: We set a range of learning rates (0.001,
+    0.01, 0.0001) and dropout rates (0.2, 0.3, 0.5) to train model.
+-   Model building: We built neural network models using each
+    combination of layer configuration, learning rate and dropout rate,
+    resulting in a total of 27 models. For the layers we used ReLU
+    activation function, and for the output we used linear.
+-   Model training: Each model was compiled using Adam otimizer and
+    trained for 100 epochs on the training data. 20% of the training
+    data was used for validation.
+
+```{r}
+
+# Define hyperparameters
+layer_configs <- list(
+  list(units = c(64, 32, 16)), # 3 layers
+  list(units = c(32, 16)),     # 2 layers
+  list(units = c(16))          # 1 layer
+)
+
+learning_rates <- c(0.001, 0.01, 0.0001)
+dropout_rates <- c(0.2, 0.3, 0.5)
+
+# Store results
+results <- list()
+model_results <- list()
+
+# Reset the results list to avoid accumulating models across runs
+results <- list()
+model_results <- list()
+
+# Loop over hyperparameters
+for (i in seq_along(layer_configs)) {
+  for (lr in learning_rates) {
+    for (dropout in dropout_rates) {
+      # Build the model
+      model <- keras_model_sequential()
+
+      # Ensure the model only has the specific number of layers for the current configuration
+      for (units in layer_configs[[i]]$units) {
+        # Only add input_shape to the first layer
+        if (units == layer_configs[[i]]$units[1]) {
+          model %>%
+            layer_dense(units = units, activation = 'relu', input_shape = c(8)) %>%
+            layer_dropout(rate = dropout)
+        } else {
+          model %>%
+            layer_dense(units = units, activation = 'relu') %>%
+            layer_dropout(rate = dropout)
+        }
+      }
+
+      # Add the output layer (1 unit for regression)
+      model %>%
+        layer_dense(units = 1, activation = 'linear')
+
+      # Compile the model with the specific learning rate
+      optimizer <- optimizer_adam(learning_rate = lr)
+
+      model %>%
+        compile(loss = 'mean_squared_error',
+                optimizer = optimizer,
+                metrics = 'mean_squared_error')
+
+      # Fit the model
+      history <- model %>%
+        fit(x_train, y_train,
+            epochs = 100,
+            batch_size = 32,
+            validation_split = 0.2,
+            verbose = 0) 
+
+      # Store the results and model with unique key (layer configuration, learning rate, dropout)
+      results[[paste(i, lr, dropout, sep = "_")]] <- history
+      key <- paste0("Layers_", i, "_LR_", lr, "_DO_", dropout)
+      model_results[[key]] <- model
+    }
+  }
+}
+
+
+```
+
+## Model training performance
+
+To visualize training performance across the different models we
+generated line plots that show how the MSE (Mean Squared Error) changes
+over the epochs for each combination of learning rate (LR) and dropout
+rates (DO) of the layer configuration. We ended up with three plots, the
+combinations are represented by different colours. To clearly see the
+plots we performed log transformation.
+
+```{r}
+
+# Function to extract metrics from the model's history object
+extract_metrics <- function(history, metric = "loss") {
+  # Convert history to a data frame (assuming it's a Keras history object)
+  df <- data.frame(
+    epoch = seq_along(history$metrics[[metric]]),  # Number of epochs
+    value = history$metrics[[metric]]  # The metric values (loss or MSE)
+  )
+  
+  return(df)
+}
+
+# Modify plot with logarithmic scale on the y-axis to make differences clearer
+plot_metrics_consistent_colors <- function(results, metric = "loss") {
+  # Create empty list to store the plots
+  plots <- list()
+  
+  # Loop through each layer configuration (1, 2, or 3 layers) and generate a separate plot for each
+  for (i in 1:3) {
+    plot_data <- data.frame()
+    
+    # Filter results for the current layer configuration
+    for (key in names(results)) {
+      history <- results[[key]]
+      df <- extract_metrics(history, metric = metric)
+      
+      # Check if the current result belongs to the desired layer configuration
+      layer_config <- strsplit(key, "_")[[1]][1]
+      
+      if (as.numeric(layer_config) == i) {
+        df$layer_config <- paste("Layers:", layer_config)  # Add layer config info
+        
+        # Create a color identifier based on learning rate and dropout (2nd and 3rd parts of the key)
+        lr_dropout <- paste("LR:", strsplit(key, "_")[[1]][2], "- DO:", strsplit(key, "_")[[1]][3])
+        df$combination <- lr_dropout  # Use learning rate and dropout for color consistency
+        
+        plot_data <- rbind(plot_data, df)
+      }
+    }
+    
+    # Create the plot and store it in the list
+    plots[[i]] <- ggplot(plot_data, aes(x = epoch, y = value, color = combination)) +
+      geom_line() +
+      scale_y_log10() +  # Apply log transformation to y-axis
+      labs(title = paste("Log-Transformed", metric, "for Layer Configuration:", i),
+           x = "Epochs", y = paste("Log", metric), color = "LR & Dropout") +
+      theme_minimal() +
+      theme(legend.position = "right")
+  }
+  
+  # Return the list of plots
+  return(plots)
+}
+
+# Store the plots in variables
+plots <- plot_metrics_consistent_colors(results, metric = "mean_squared_error")
+
+
+```
+
+```{r}
+p1 <- plots[[1]]
+ggsave("imgs/1Layer.jpg", plot = p1, width = 10, height = 8)
+
+```
+
+For the configuration with one hidden layer, the combination of LR =
+0.0001 and DO = 0.5 is the worst performing. Even though the combination
+of LR = 0.0001 and DO = 0.2 stared of with the highest MSE, it flattens
+out below the combination of LR = 0.001 and DO = 0.3. These models are
+the top three worst performing models. The LR = 0.0001 and DO = 0.5 seem
+to be a poor choice for this model with one hidden layer. The models
+that are performing well are those with LR = 0.01 and DO = 0.2, as was
+observed in the classification problem.
+
+```{r}
+p2 <- plots[[2]]
+ggsave("imgs/2Layers.jpg", plot = p2, width = 10, height = 8)
+```
+
+Like the configuration with one hidden layer, in the model configuration
+with 2 layers, the combination of LR = 0.0001 and DO = 0.5 is the worst
+performing, there is an overlap with the model combinations of LR =
+0.0001 with D0 = 0.3 and 0.2, but all three are the worst performing
+algorithms throughout the training. The LR = 0.0001 and DO = 0.5 seems
+to also be a poor choice for this model with two hidden layers. The
+models that are performing well are those with LR = 0.01 and DO = 0.2.
+
+```{r}
+p3 <- plots[[3]]
+ggsave("imgs/3Layers.jpg", plot = p3, width = 10, height = 8)
+```
+
+The training MSE trend for the model configuration with three hidden
+layers is similar to that of the models with two and one hidden layer.
+All the plots show a lot of fluctuations, which may indicate overfitting
+of the training data.
+
+## Training performance at epoch = 50
+
+All the model plots flatten around epoch 50, so we extracted the MSE at
+this point to compare their performance. The MSE of the top ten
+best-performing models ranges from 0.15 to 0.29. Since the data is
+scaled, the MSE represents the scaled data. Among the top ten models,
+four have one hidden layer, four have two hidden layers, and two have
+three hidden layers. All of these models used a learning rate (LR) of
+either 0.01 or 0.001, combined with dropout rates (DO) of 0.2 or 0.3.
+
+```{r}
+
+# Modify the extract_metrics function to get metrics at a specific epoch
+extract_metrics_at_epoch <- function(history, epoch = 50, metric = "loss") {
+  # Ensure the epoch is within the range of the training history
+  if (epoch > length(history$metrics[[metric]])) {
+    stop("Specified epoch exceeds the total number of epochs.")
+  }
+  
+  # Get the value at the specified epoch
+  mse_value <- history$metrics[[metric]][epoch]
+  return(mse_value)
+}
+
+# Loop through all results and extract MSE at epoch 50
+mse_at_epoch_50 <- data.frame(
+  Model = character(),
+  MSE = numeric(),
+  stringsAsFactors = FALSE
+)
+
+for (key in names(results)) {
+  history <- results[[key]]
+  
+  # Get the MSE at epoch 50
+  mse_value <- extract_metrics_at_epoch(history, epoch = 50, metric = "mean_squared_error")
+  
+  # Add to the dataframe
+  mse_at_epoch_50 <- rbind(mse_at_epoch_50, data.frame(Model = key, MSE = round(mse_value, 2)))
+}
+
+mse_at_epoch_50_sorted <- mse_at_epoch_50[order(mse_at_epoch_50$MSE), ]
+
+# Display the dataframe with MSE at epoch 50
+DT::datatable(mse_at_epoch_50_sorted)
+
+# Save the dataframe as a CSV file
+write.csv(mse_at_epoch_50_sorted, "data/mse_at_epoch_50_sorted.csv", row.names = FALSE)
+
+```
+
+To evaluate the performance of the different model architectures, we
+plotted a bar graph to visualize the MSE across the models. Across all
+layer configurations, the models with a learning rate (LR) of 0.01 and a
+dropout rate (DO) of 0.2 exhibited the lowest MSE.
+
+```{r}
+train_mse <- ggplot(mse_at_epoch_50, aes(x = Model, y = MSE)) +
+  geom_bar(stat = "identity", fill = "skyblue") +
+  theme_minimal() +
+  labs(title = "                      Train MSE for the different model architecture",
+       x = "Model (Layers_LR_Dropout)", y = "Mean Squared Error") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))  # Rotate x-axis labels for readability
+
+ggsave("imgs/train_50Plot.jpg", plot = train_mse, width = 10, height = 8)
+
+```
+
+## Model predictionss
+
+```{r}
+# Access the selected model using the key (model 4 in the table)
+selected_model_key <- "Layers_1_LR_0.01_DO_0.2"
+selected_model <- model_results[[selected_model_key]]
+
+# Perform predictions on the test data
+pred_values <- selected_model %>% predict(x_test)
+
+# Combine predicted and actual values into a data frame
+prediction_table <- data.frame(
+  "Predicted value" = round(pred_values,2),  # Assuming `pred_values` holds your predictions
+  "Actual value" = y_test
+)
+
+# Show the first 10 rows in a pretty table
+DT::datatable(prediction_table, rownames = T)
+sampled_table <- sample_n(prediction_table, 10)
+
+write.csv(sampled_table, "data/prediction_table_regr.csv", row.names = FALSE)
+```
+
+## Evaluate
+
+```{r}
+selected_model %>% evaluate(x_test, y_test)
+```
